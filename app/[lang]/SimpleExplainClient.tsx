@@ -8,10 +8,7 @@ interface ClientDict {
     subtitle: string;
     placeholder: string;
     generateBtn: string;
-    levelLabel: string;
-    beginnerLevel: string;
-    intermediateLevel: string;
-    advancedLevel: string;
+    hint: string;
   };
   recent: {
     heading: string;
@@ -21,39 +18,113 @@ interface ClientDict {
   loading: {
     text: string;
   };
+  lesson: {
+    beginnerLabel: string;
+    intermediateLabel: string;
+    advanceLabel: string;
+    generatedOn: string;
+    totalWords: string;
+    wordsSuffix: string;
+  };
   article: {
     newTopic: string;
     fontSizeTitle: string;
     printTitle: string;
-    minRead: string;
     footer: string;
     titlePrefix: string;
   };
   errorMessage: string;
 }
 
-type Section = "input" | "loading" | "article";
-type Level = "beginner" | "intermediate" | "advanced";
+type Section = "input" | "loading" | "lesson";
+type LessonLevel = "beginner" | "intermediate" | "advance";
 
-const fontSizeClasses = ["font-small", "font-medium", "font-large"];
-const RECENT_SEARCHES_STORAGE_KEY = "simple-explain-recent-searches-v1";
-const MAX_RECENT_SEARCHES = 10;
+interface StructuredLesson {
+  schema_version: string;
+  topic: string;
+  lesson: {
+    beginner: string;
+    intermediate: string;
+    advance: string;
+  };
+}
+
+interface LessonViewLevel {
+  key: LessonLevel;
+  label: string;
+  wordCount: number;
+  paragraphs: string[];
+}
+
+interface LessonViewData {
+  title: string;
+  generatedDate: string;
+  totalWords: number;
+  schemaVersion: string;
+  levels: LessonViewLevel[];
+}
 
 interface RecentSearchItem {
   topic: string;
   searchedAt: string;
-  title?: string;
-  readingTime?: string;
-  generatedDate?: string;
-  essay?: string;
+  lesson?: StructuredLesson;
 }
 
 interface RecentSearchInput {
   topic: string;
-  title?: string;
-  readingTime?: string;
-  generatedDate?: string;
-  essay?: string;
+  lesson?: StructuredLesson;
+}
+
+const LEVEL_ORDER: LessonLevel[] = ["beginner", "intermediate", "advance"];
+const fontSizeClasses = ["font-small", "font-medium", "font-large"];
+const RECENT_SEARCHES_STORAGE_KEY = "simple-explain-recent-searches-v2";
+const LEGACY_STORAGE_KEY = "simple-explain-recent-searches-v1";
+const MAX_RECENT_SEARCHES = 10;
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function normalizeLesson(value: unknown): StructuredLesson | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as {
+    schema_version?: unknown;
+    topic?: unknown;
+    lesson?: {
+      beginner?: unknown;
+      intermediate?: unknown;
+      advance?: unknown;
+    };
+  };
+
+  if (!isNonEmptyString(candidate.schema_version) || !isNonEmptyString(candidate.topic)) {
+    return null;
+  }
+
+  if (!candidate.lesson || typeof candidate.lesson !== "object") {
+    return null;
+  }
+
+  const beginner = candidate.lesson.beginner;
+  const intermediate = candidate.lesson.intermediate;
+  const advance = candidate.lesson.advance;
+
+  if (!isNonEmptyString(beginner) || !isNonEmptyString(intermediate) || !isNonEmptyString(advance)) {
+    return null;
+  }
+
+  return {
+    schema_version: candidate.schema_version,
+    topic: candidate.topic,
+    lesson: {
+      beginner,
+      intermediate,
+      advance,
+    },
+  };
 }
 
 function normalizeRecentSearchItem(value: unknown): RecentSearchItem | null {
@@ -64,17 +135,10 @@ function normalizeRecentSearchItem(value: unknown): RecentSearchItem | null {
   const candidate = value as {
     topic?: unknown;
     searchedAt?: unknown;
-    title?: unknown;
-    readingTime?: unknown;
-    generatedDate?: unknown;
-    essay?: unknown;
+    lesson?: unknown;
   };
-  if (typeof candidate.topic !== "string") {
-    return null;
-  }
 
-  const topic = candidate.topic.trim();
-  if (!topic) {
+  if (!isNonEmptyString(candidate.topic)) {
     return null;
   }
 
@@ -84,14 +148,13 @@ function normalizeRecentSearchItem(value: unknown): RecentSearchItem | null {
       ? candidate.searchedAt
       : new Date().toISOString();
 
-  const title = typeof candidate.title === "string" ? candidate.title : undefined;
-  const readingTime =
-    typeof candidate.readingTime === "string" ? candidate.readingTime : undefined;
-  const generatedDate =
-    typeof candidate.generatedDate === "string" ? candidate.generatedDate : undefined;
-  const essay = typeof candidate.essay === "string" ? candidate.essay : undefined;
+  const lesson = normalizeLesson(candidate.lesson);
 
-  return { topic, searchedAt, title, readingTime, generatedDate, essay };
+  return {
+    topic: candidate.topic.trim(),
+    searchedAt,
+    lesson: lesson ?? undefined,
+  };
 }
 
 function readRecentSearchStore(): Record<string, RecentSearchItem[]> {
@@ -100,7 +163,10 @@ function readRecentSearchStore(): Record<string, RecentSearchItem[]> {
   }
 
   try {
-    const rawValue = window.localStorage.getItem(RECENT_SEARCHES_STORAGE_KEY);
+    const rawValue =
+      window.localStorage.getItem(RECENT_SEARCHES_STORAGE_KEY) ??
+      window.localStorage.getItem(LEGACY_STORAGE_KEY);
+
     if (!rawValue) {
       return {};
     }
@@ -142,6 +208,15 @@ function writeRecentSearchStore(store: Record<string, RecentSearchItem[]>) {
   }
 }
 
+function toDisplayParagraphs(value: string): string[] {
+  const normalized = value.replace(/\\n/g, "\n").trim();
+  return normalized.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+}
+
+function countWords(value: string): number {
+  return value.trim().split(/\s+/).filter(Boolean).length;
+}
+
 export default function SimpleExplainClient({
   dict,
   lang,
@@ -151,30 +226,54 @@ export default function SimpleExplainClient({
 }) {
   const [section, setSection] = useState<Section>("input");
   const [topic, setTopic] = useState("");
-  const [articleData, setArticleData] = useState<{
-    title: string;
-    date: string;
-    readingTime: string;
-    paragraphs: string[];
-  } | null>(null);
-  const [explanationLevel, setExplanationLevel] =
-    useState<Level>("intermediate");
+  const [lessonData, setLessonData] = useState<LessonViewData | null>(null);
   const [recentSearches, setRecentSearches] = useState<RecentSearchItem[]>([]);
   const [fontSizeIndex, setFontSizeIndex] = useState(1);
   const inputRef = useRef<HTMLInputElement>(null);
   const canGenerate = topic.trim().length > 0;
   const dateLocale = lang === "vi" ? "vi-VN" : "en-US";
 
+  const levelLabelMap: Record<LessonLevel, string> = {
+    beginner: dict.lesson.beginnerLabel,
+    intermediate: dict.lesson.intermediateLabel,
+    advance: dict.lesson.advanceLabel,
+  };
+
   useEffect(() => {
     const store = readRecentSearchStore();
     setRecentSearches(store[lang] ?? []);
   }, [lang]);
 
-  const levelOptions: { value: Level; label: string }[] = [
-    { value: "beginner", label: dict.input.beginnerLevel },
-    { value: "intermediate", label: dict.input.intermediateLevel },
-    { value: "advanced", label: dict.input.advancedLevel },
-  ];
+  const createLessonView = useCallback(
+    (lesson: StructuredLesson, generatedAtIso: string): LessonViewData => {
+      const generatedDate = new Date(generatedAtIso).toLocaleDateString(dateLocale, {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      });
+
+      const levels: LessonViewLevel[] = LEVEL_ORDER.map((levelKey) => {
+        const text = lesson.lesson[levelKey];
+        return {
+          key: levelKey,
+          label: levelLabelMap[levelKey],
+          wordCount: countWords(text),
+          paragraphs: toDisplayParagraphs(text),
+        };
+      });
+
+      const totalWords = levels.reduce((sum, level) => sum + level.wordCount, 0);
+
+      return {
+        title: `${dict.article.titlePrefix} ${lesson.topic}`,
+        generatedDate,
+        totalWords,
+        schemaVersion: lesson.schema_version,
+        levels,
+      };
+    },
+    [dateLocale, dict.article.titlePrefix, levelLabelMap]
+  );
 
   const saveRecentSearch = useCallback(
     (entryData: RecentSearchInput) => {
@@ -187,19 +286,14 @@ export default function SimpleExplainClient({
       const currentLangSearches = store[lang] ?? [];
 
       const deduplicated = currentLangSearches.filter(
-        (item) =>
-          item.topic.toLocaleLowerCase(dateLocale) !==
-          normalizedTopic.toLocaleLowerCase(dateLocale)
+        (item) => item.topic.toLocaleLowerCase(dateLocale) !== normalizedTopic.toLocaleLowerCase(dateLocale)
       );
 
       const nextSearches = [
         {
           topic: normalizedTopic,
           searchedAt: new Date().toISOString(),
-          title: entryData.title,
-          readingTime: entryData.readingTime,
-          generatedDate: entryData.generatedDate,
-          essay: entryData.essay,
+          lesson: entryData.lesson,
         },
         ...deduplicated,
       ].slice(0, MAX_RECENT_SEARCHES);
@@ -236,12 +330,12 @@ export default function SimpleExplainClient({
       .replace(/\s+/g, "-")
       .slice(0, 60);
 
-    return base || "post";
+    return base || "lesson";
   }, []);
 
-  const downloadTextFile = useCallback((fileName: string, content: string) => {
+  const downloadFile = useCallback((fileName: string, content: string, type: string) => {
     const blob = new Blob([content], {
-      type: "text/plain;charset=utf-8",
+      type,
     });
     const objectUrl = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -259,32 +353,28 @@ export default function SimpleExplainClient({
       const fileDate = Number.isNaN(searchedAtDate.getTime())
         ? new Date().toISOString().slice(0, 10)
         : searchedAtDate.toISOString().slice(0, 10);
-      const lines = [
-        entry.title ?? `${dict.article.titlePrefix} ${entry.topic}`,
-        "",
-        entry.readingTime ?? "",
-        entry.generatedDate ?? "",
-        "",
-        entry.essay ?? entry.topic,
-      ].filter((line, lineIndex, arr) => {
-        if (line !== "") {
-          return true;
-        }
-        // Keep at most one consecutive empty line.
-        return lineIndex === 0 || arr[lineIndex - 1] !== "";
-      });
+
+      const exportPayload = entry.lesson ?? {
+        schema_version: "1.0",
+        topic: entry.topic,
+        lesson: {
+          beginner: "",
+          intermediate: "",
+          advance: "",
+        },
+      };
 
       const safeTopic = sanitizeFileName(entry.topic);
-      const fileName = `simple-explain-${lang}-${String(index + 1).padStart(2, "0")}-${fileDate}-${safeTopic}.txt`;
-      downloadTextFile(fileName, lines.join("\n"));
+      const fileName = `simple-explain-${lang}-${String(index + 1).padStart(2, "0")}-${fileDate}-${safeTopic}.json`;
+      downloadFile(fileName, JSON.stringify(exportPayload, null, 2), "application/json;charset=utf-8");
     },
-    [dict.article.titlePrefix, downloadTextFile, lang, sanitizeFileName]
+    [downloadFile, lang, sanitizeFileName]
   );
 
   const handleGenerate = useCallback(
     async (topicValue?: string) => {
-      const t = (topicValue ?? topic).trim();
-      if (!t) {
+      const trimmedTopic = (topicValue ?? topic).trim();
+      if (!trimmedTopic) {
         inputRef.current?.focus();
         return;
       }
@@ -296,9 +386,8 @@ export default function SimpleExplainClient({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            topic: t,
+            topic: trimmedTopic,
             lang,
-            level: explanationLevel,
           }),
         });
 
@@ -306,97 +395,51 @@ export default function SimpleExplainClient({
           throw new Error("API request failed");
         }
 
-        const data = await res.json();
-        const essay: string = data.essay;
+        const data = (await res.json()) as { lesson?: unknown };
+        const structuredLesson = normalizeLesson(data.lesson);
 
-        const paragraphs = essay.split("\n\n").filter((p) => p.trim());
-        const wordCount = essay.split(/\s+/).length;
-        const minutes = Math.ceil(wordCount / 200);
-        const today = new Date();
-        const dateStr = today.toLocaleDateString(dateLocale, {
-          year: "numeric",
-          month: "long",
-          day: "numeric",
-        });
+        if (!structuredLesson) {
+          throw new Error("Invalid response shape");
+        }
 
-        const readingTime = `${minutes} ${dict.article.minRead}`;
-        const title = `${dict.article.titlePrefix} ${t}`;
-        const essayText = paragraphs.join("\n\n");
+        const generatedAt = new Date().toISOString();
 
-        setArticleData({
-          title,
-          date: dateStr,
-          readingTime,
-          paragraphs,
-        });
+        setLessonData(createLessonView(structuredLesson, generatedAt));
         saveRecentSearch({
-          topic: t,
-          title,
-          readingTime,
-          generatedDate: dateStr,
-          essay: essayText,
+          topic: structuredLesson.topic || trimmedTopic,
+          lesson: structuredLesson,
         });
-        setSection("article");
+        setSection("lesson");
         window.scrollTo({ top: 0, behavior: "smooth" });
       } catch {
         alert(dict.errorMessage);
         setSection("input");
       }
     },
-    [
-      topic,
-      dict,
-      dateLocale,
-      explanationLevel,
-      lang,
-      saveRecentSearch,
-    ]
+    [createLessonView, dict.errorMessage, lang, saveRecentSearch, topic]
   );
 
   const openRecentSearch = useCallback(
     (entry: RecentSearchItem) => {
       setTopic(entry.topic);
 
-      const essayText = entry.essay?.trim();
-      if (!essayText) {
-        // Backward compatibility for older localStorage entries without cached content.
+      if (!entry.lesson) {
+        // Backward compatibility for old entries without structured payload.
         handleGenerate(entry.topic);
         return;
       }
 
-      const paragraphs = essayText.split("\n\n").filter((p) => p.trim());
-      const wordCount = essayText.split(/\s+/).filter(Boolean).length;
-      const parsedSearchDate = new Date(entry.searchedAt);
-      const fallbackDate = Number.isNaN(parsedSearchDate.getTime())
-        ? new Date().toLocaleDateString(dateLocale, {
-            year: "numeric",
-            month: "long",
-            day: "numeric",
-          })
-        : parsedSearchDate.toLocaleDateString(dateLocale, {
-            year: "numeric",
-            month: "long",
-            day: "numeric",
-          });
-
-      setArticleData({
-        title: entry.title ?? `${dict.article.titlePrefix} ${entry.topic}`,
-        date: entry.generatedDate ?? fallbackDate,
-        readingTime:
-          entry.readingTime ??
-          `${Math.max(1, Math.ceil(wordCount / 200))} ${dict.article.minRead}`,
-        paragraphs: paragraphs.length > 0 ? paragraphs : [essayText],
-      });
-      setSection("article");
+      setLessonData(createLessonView(entry.lesson, entry.searchedAt));
+      setSection("lesson");
       window.scrollTo({ top: 0, behavior: "smooth" });
     },
-    [dateLocale, dict.article.minRead, dict.article.titlePrefix, handleGenerate]
+    [createLessonView, handleGenerate]
   );
 
   const handleNewTopic = () => {
     setSection("input");
     setTopic("");
-    setTimeout(() => inputRef.current?.focus(), 100);
+    setTimeout(() => inputRef.current?.focus(), 80);
   };
 
   const toggleFontSize = () => {
@@ -409,7 +452,18 @@ export default function SimpleExplainClient({
   const handlePrint = () => window.print();
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") handleGenerate();
+    if (e.key === "Enter") {
+      handleGenerate();
+    }
+  };
+
+  const scrollToLevel = (level: LessonLevel) => {
+    const target = document.getElementById(`lesson-level-${level}`);
+    if (!target) {
+      return;
+    }
+
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   if (section === "loading") {
@@ -429,7 +483,7 @@ export default function SimpleExplainClient({
     );
   }
 
-  if (section === "article" && articleData) {
+  if (section === "lesson" && lessonData) {
     return (
       <section className="article-section">
         <div className="article-controls">
@@ -462,18 +516,51 @@ export default function SimpleExplainClient({
 
         <article className="blog-post paper-card">
           <header className="post-header">
-            <div className="post-meta">
-              <span className="reading-time">{articleData.readingTime}</span>
-              <span className="separator">•</span>
-              <span className="post-date">{articleData.date}</span>
-            </div>
-            <h1 className="post-title">{articleData.title}</h1>
+            <h1 className="post-title">{lessonData.title}</h1>
             <div className="title-decoration" />
+            <div className="post-meta post-meta-grid">
+              <span className="post-meta-chip">
+                {dict.lesson.generatedOn}: {lessonData.generatedDate}
+              </span>
+              <span className="post-meta-chip">
+                {dict.lesson.totalWords}: {lessonData.totalWords} {dict.lesson.wordsSuffix}
+              </span>
+              <span className="post-meta-chip">Schema v{lessonData.schemaVersion}</span>
+            </div>
           </header>
 
-          <div className="post-content">
-            {articleData.paragraphs.map((p, i) => (
-              <p key={i}>{p.trim()}</p>
+          <div className="level-jump-nav" role="navigation" aria-label="Lesson levels">
+            {lessonData.levels.map((level) => (
+              <button
+                key={`jump-${level.key}`}
+                type="button"
+                className="level-jump-btn"
+                onClick={() => scrollToLevel(level.key)}
+              >
+                {level.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="lesson-levels">
+            {lessonData.levels.map((level) => (
+              <section
+                key={`level-${level.key}`}
+                id={`lesson-level-${level.key}`}
+                className="lesson-level"
+              >
+                <div className="lesson-level-head">
+                  <h2 className="lesson-level-title">{level.label}</h2>
+                  <span className="lesson-level-words">
+                    {level.wordCount} {dict.lesson.wordsSuffix}
+                  </span>
+                </div>
+                <div className="post-content">
+                  {level.paragraphs.map((paragraph, index) => (
+                    <p key={`${level.key}-paragraph-${index}`}>{paragraph}</p>
+                  ))}
+                </div>
+              </section>
             ))}
           </div>
 
@@ -510,27 +597,11 @@ export default function SimpleExplainClient({
             disabled={!canGenerate}
           >
             <span className="btn-text">{dict.input.generateBtn}</span>
-            <span className="btn-icon">✨</span>
+            <span className="btn-icon">+</span>
           </button>
         </div>
 
-        <div className="level-controls">
-          <label className="level-control" htmlFor="explanation-level">
-            <span className="level-label">{dict.input.levelLabel}</span>
-            <select
-              id="explanation-level"
-              className="level-select"
-              value={explanationLevel}
-              onChange={(e) => setExplanationLevel(e.target.value as Level)}
-            >
-              {levelOptions.map((option) => (
-                <option key={`level-${option.value}`} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
+        <p className="input-hint">{dict.input.hint}</p>
 
         <section className="recent-searches">
           <div className="recent-searches-header">
@@ -542,10 +613,7 @@ export default function SimpleExplainClient({
           ) : (
             <ul className="recent-searches-list">
               {recentSearches.map((entry, index) => (
-                <li
-                  key={`${entry.topic}-${entry.searchedAt}`}
-                  className="recent-searches-item"
-                >
+                <li key={`${entry.topic}-${entry.searchedAt}`} className="recent-searches-item">
                   <div className="recent-searches-main">
                     <span className="recent-searches-index">{index + 1}.</span>
                     <button

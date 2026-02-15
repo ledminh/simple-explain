@@ -42,6 +42,7 @@ export default async function Page({
             input: dict.input,
             recent: dict.recent,
             loading: dict.loading,
+            lesson: dict.lesson,
             article: dict.article,
             errorMessage: dict.errorMessage,
           }}
