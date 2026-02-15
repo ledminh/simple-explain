@@ -25,6 +25,8 @@ interface ClientDict {
     generatedOn: string;
     totalWords: string;
     wordsSuffix: string;
+    continueToNext: string;
+    finalLevel: string;
   };
   article: {
     newTopic: string;
@@ -227,6 +229,7 @@ export default function SimpleExplainClient({
   const [section, setSection] = useState<Section>("input");
   const [topic, setTopic] = useState("");
   const [lessonData, setLessonData] = useState<LessonViewData | null>(null);
+  const [activeLevel, setActiveLevel] = useState<LessonLevel>("beginner");
   const [recentSearches, setRecentSearches] = useState<RecentSearchItem[]>([]);
   const [fontSizeIndex, setFontSizeIndex] = useState(1);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -265,14 +268,14 @@ export default function SimpleExplainClient({
       const totalWords = levels.reduce((sum, level) => sum + level.wordCount, 0);
 
       return {
-        title: `${dict.article.titlePrefix} ${lesson.topic}`,
+        title: lesson.topic,
         generatedDate,
         totalWords,
         schemaVersion: lesson.schema_version,
         levels,
       };
     },
-    [dateLocale, dict.article.titlePrefix, levelLabelMap]
+    [dateLocale, levelLabelMap]
   );
 
   const saveRecentSearch = useCallback(
@@ -405,6 +408,7 @@ export default function SimpleExplainClient({
         const generatedAt = new Date().toISOString();
 
         setLessonData(createLessonView(structuredLesson, generatedAt));
+        setActiveLevel("beginner");
         saveRecentSearch({
           topic: structuredLesson.topic || trimmedTopic,
           lesson: structuredLesson,
@@ -430,6 +434,7 @@ export default function SimpleExplainClient({
       }
 
       setLessonData(createLessonView(entry.lesson, entry.searchedAt));
+      setActiveLevel("beginner");
       setSection("lesson");
       window.scrollTo({ top: 0, behavior: "smooth" });
     },
@@ -457,13 +462,25 @@ export default function SimpleExplainClient({
     }
   };
 
-  const scrollToLevel = (level: LessonLevel) => {
-    const target = document.getElementById(`lesson-level-${level}`);
-    if (!target) {
+  const currentLevel =
+    lessonData?.levels.find((level) => level.key === activeLevel) ??
+    lessonData?.levels[0] ??
+    null;
+  const currentLevelIndex = currentLevel
+    ? LEVEL_ORDER.indexOf(currentLevel.key)
+    : -1;
+  const nextLevelKey =
+    currentLevelIndex >= 0 && currentLevelIndex < LEVEL_ORDER.length - 1
+      ? LEVEL_ORDER[currentLevelIndex + 1]
+      : null;
+  const nextLevelLabel = nextLevelKey ? levelLabelMap[nextLevelKey] : null;
+
+  const handleContinueToNext = () => {
+    if (!nextLevelKey) {
       return;
     }
-
-    target.scrollIntoView({ behavior: "smooth", block: "start" });
+    setActiveLevel(nextLevelKey);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   if (section === "loading") {
@@ -498,7 +515,8 @@ export default function SimpleExplainClient({
               aria-label={dict.article.fontSizeTitle}
               onClick={toggleFontSize}
             >
-              <span className="font-size-indicator">A</span>
+              <span className="font-size-indicator">T</span>
+              <span>{dict.article.fontSizeTitle}</span>
             </button>
             <button
               className="tool-btn"
@@ -510,6 +528,7 @@ export default function SimpleExplainClient({
               <span className="tool-icon" aria-hidden="true">
                 🖨
               </span>
+              <span>{dict.article.printTitle}</span>
             </button>
           </div>
         </div>
@@ -525,7 +544,6 @@ export default function SimpleExplainClient({
               <span className="post-meta-chip">
                 {dict.lesson.totalWords}: {lessonData.totalWords} {dict.lesson.wordsSuffix}
               </span>
-              <span className="post-meta-chip">Schema v{lessonData.schemaVersion}</span>
             </div>
           </header>
 
@@ -534,38 +552,47 @@ export default function SimpleExplainClient({
               <button
                 key={`jump-${level.key}`}
                 type="button"
-                className="level-jump-btn"
-                onClick={() => scrollToLevel(level.key)}
+                className={`level-jump-btn ${activeLevel === level.key ? "active" : ""}`}
+                onClick={() => setActiveLevel(level.key)}
               >
                 {level.label}
               </button>
             ))}
           </div>
 
-          <div className="lesson-levels">
-            {lessonData.levels.map((level) => (
-              <section
-                key={`level-${level.key}`}
-                id={`lesson-level-${level.key}`}
-                className="lesson-level"
-              >
-                <div className="lesson-level-head">
-                  <h2 className="lesson-level-title">{level.label}</h2>
-                  <span className="lesson-level-words">
-                    {level.wordCount} {dict.lesson.wordsSuffix}
-                  </span>
-                </div>
-                <div className="post-content">
-                  {level.paragraphs.map((paragraph, index) => (
-                    <p key={`${level.key}-paragraph-${index}`}>{paragraph}</p>
-                  ))}
-                </div>
-              </section>
-            ))}
-          </div>
+          <div className="article-divider" />
+
+          {currentLevel ? (
+            <section className="lesson-level">
+              <div className="lesson-level-head">
+                <h2 className="lesson-level-title">{currentLevel.label}</h2>
+                <span className="lesson-level-words">
+                  {currentLevel.wordCount} {dict.lesson.wordsSuffix}
+                </span>
+              </div>
+              <div className="post-content">
+                {currentLevel.paragraphs.map((paragraph, index) => (
+                  <p key={`${currentLevel.key}-paragraph-${index}`}>{paragraph}</p>
+                ))}
+              </div>
+              <div className="lesson-level-footer">
+                {nextLevelLabel ? (
+                  <button
+                    type="button"
+                    className="continue-btn"
+                    onClick={handleContinueToNext}
+                  >
+                    {dict.lesson.continueToNext} {nextLevelLabel}
+                  </button>
+                ) : (
+                  <p className="final-level-text">{dict.lesson.finalLevel}</p>
+                )}
+              </div>
+            </section>
+          ) : null}
 
           <footer className="post-footer">
-            <div className="footer-decoration" />
+            <div className="article-divider" />
             <p className="footer-text">{dict.article.footer}</p>
           </footer>
         </article>
